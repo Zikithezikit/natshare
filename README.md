@@ -55,6 +55,25 @@ sudo natshare -w eth1 -l wlan0 -s MyNet -p 'correct horse'   # Wi-Fi AP
 Temporary files live in `/tmp/natshare_*` and are removed on exit. If the Wi-Fi
 interface is managed by NetworkManager, stop it managing the interface first.
 
+## What the WAN can see
+
+Clients are not bridged or forwarded: every flow is terminated in userspace and
+re-created by a normal socket on the host. On the WAN side that means:
+
+- **One MAC, one IP**: only the host's. No client MAC or address is ever put on the WAN.
+- **No TTL decrement**: packets are originated by the host, not routed through it.
+- **Host TCP/IP fingerprint**: TCP options, window scaling, timestamps and IP IDs
+  come from the host's stack, not the clients'.
+- **DNS**: `dnsmasq` forwards from the host's address and never forwards
+  single-label or private reverse lookups (`domain-needed`, `bogus-priv`), so
+  client hostnames stay local. No client MAC is attached to upstream queries.
+- **IPv6** from clients is ignored, so it cannot leak.
+
+This does not hide application-layer traits: HTTP `User-Agent`, TLS client
+fingerprints, DNS or traffic volume and timing patterns, and ICMP payload
+contents are the clients' own and are passed through unchanged. Make sure the
+host's own DNS resolver is reached via `--wan`, or lookups may take another path.
+
 ## Limitations
 
 - Pure-Python forwarding is slower than kernel NAT.

@@ -39,6 +39,10 @@ class Dnsmasq:
             f"dhcp-option=option:router,{self.gateway}",
             f"dhcp-option=option:dns-server,{self.gateway}",
             f"port={DNS_PORT}",
+            # Keep client identity off the WAN: never forward plain/local names or
+            # private-range reverse lookups upstream.
+            "domain-needed",
+            "bogus-priv",
             f"dhcp-leasefile={self.leases}",
             f"pid-file={self.conf}.pid",
         ]

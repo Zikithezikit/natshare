@@ -127,6 +127,22 @@ class ProxyTest(unittest.TestCase):
         self.io.inject(pk.build_tcp(CLIENT, 4000, SERVER_IP, port, cseq + 1, fin.seq + 1, pk.ACK))
         self.pump(lambda: not self.proxy.tcp)
 
+    def test_upstream_sees_host_not_client(self):
+        """The remote end must see a host-originated connection, never the client's address."""
+        srv = serve(self, socket.SOCK_STREAM)
+        port = srv.getsockname()[1]
+        peers = []
+
+        def accept():
+            conn, peer = srv.accept()
+            peers.append(peer[0])
+            conn.close()
+
+        threading.Thread(target=accept, daemon=True).start()
+        self.io.inject(pk.build_tcp(CLIENT, 4002, SERVER_IP, port, 1, 0, pk.SYN))
+        self.pump(lambda: peers)
+        self.assertNotEqual(peers[0], CLIENT)
+
     def test_tcp_refused_gets_rst(self):
         s = serve(self, socket.SOCK_STREAM)
         port = s.getsockname()[1]
