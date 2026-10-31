@@ -1,94 +1,70 @@
 # natshare
 
-Transient, userspace Internet Connection Sharing for Linux. Share one interface's
-connection (`--wan`) with clients on another (`--lan`, Ethernet or Wi-Fi) without
-touching `ip_forward`, `iptables`/`nftables` or kernel routes. Everything is torn
-down on `Ctrl-C` / `SIGTERM`.
+Share your computer's internet connection with other devices, then leave no trace.
 
-## How it works
+Plug a laptop into one network port, or turn your Wi-Fi card into a hotspot, and
+natshare passes the internet through from another connection. Nothing on your
+system is permanently changed, and when you press `Ctrl-C` everything is put back
+the way it was.
 
-```
- clients ──L2──> [LAN iface] ──AF_PACKET──> natshare (Python NAT) ──sockets──> [WAN iface]
-                     ▲
-              dnsmasq (DHCP + DNS), hostapd (Wi-Fi AP, if LAN is wireless)
-```
+To the network on the other side, it just looks like one computer. Your other
+devices don't show up.
 
-- The LAN interface temporarily gets the gateway address (first host of the
-  subnet), so the kernel answers ARP and `dnsmasq` serves DHCP/DNS on it.
-- Client IPv4 frames are read from an `AF_PACKET` socket. TCP, UDP and ICMP echo
-  flows are terminated in userspace and re-originated from ordinary sockets bound
-  to the WAN interface (`SO_BINDTODEVICE`); replies are rebuilt into packets and
-  sent back to the client.
-- `natshare/tun.py` provides a `/dev/net/tun` wrapper. It is not on the default
-  path: the kernel will not deliver packets from one interface to a TUN device
-  without forwarding enabled, which this tool deliberately avoids.
+## Quick start
 
-## Requirements
-
-- Linux, Python 3.9+, run as root (`CAP_NET_ADMIN` and `CAP_NET_RAW`)
-- `ip` (iproute2), `dnsmasq`
-- `hostapd` and `rfkill` when the LAN interface is wireless
-
-## Install
+You need Linux, Python 3.9+, root access, and these installed: `dnsmasq`
+(plus `hostapd` if you want a Wi-Fi hotspot).
 
 ```sh
-make install        # system-wide (sudo; add PIP_FLAGS=--break-system-packages if pip refuses)
-make install-dev    # .venv with editable install + dev tools
+git clone https://github.com/Zikithezikit/natshare.git
+cd natshare
+make install
 ```
 
-## Usage
+Share the internet from `eth1` out through `eth2`:
 
 ```sh
 sudo natshare --wan eth1 --lan eth2
-sudo natshare -w eth1 -l wlan0 -s MyNet -p 'correct horse'   # Wi-Fi AP
 ```
 
-| Option | Meaning |
-| --- | --- |
-| `--wan, -w` | Interface with Internet access |
-| `--lan, -l` | Interface to share to |
-| `--ssid, -s` | AP name when LAN is wireless (default `natshare-ap`) |
-| `--password, -p` | WPA2 passphrase, 8-63 chars (open network if omitted) |
-| `--subnet` | Client subnet, `/27` or larger (default `10.42.0.0/24`) |
-| `--verbose, -v` | Debug logging |
-
-Temporary files live in `/tmp/natshare_*` and are removed on exit. If the Wi-Fi
-interface is managed by NetworkManager, stop it managing the interface first.
-
-## What the WAN can see
-
-Clients are not bridged or forwarded: every flow is terminated in userspace and
-re-created by a normal socket on the host. On the WAN side that means:
-
-- **One MAC, one IP**: only the host's. No client MAC or address is ever put on the WAN.
-- **No TTL decrement**: packets are originated by the host, not routed through it.
-- **Host TCP/IP fingerprint**: TCP options, window scaling, timestamps and IP IDs
-  come from the host's stack, not the clients'.
-- **DNS**: `dnsmasq` forwards from the host's address and never forwards
-  single-label or private reverse lookups (`domain-needed`, `bogus-priv`), so
-  client hostnames stay local. No client MAC is attached to upstream queries.
-- **IPv6** from clients is ignored, so it cannot leak.
-
-This does not hide application-layer traits: HTTP `User-Agent`, TLS client
-fingerprints, DNS or traffic volume and timing patterns, and ICMP payload
-contents are the clients' own and are passed through unchanged. Make sure the
-host's own DNS resolver is reached via `--wan`, or lookups may take another path.
-
-## Limitations
-
-- Pure-Python forwarding is slower than kernel NAT.
-- IPv4 only; IP fragments are dropped; TCP uses a fixed 64 KB window without
-  window scaling or SACK. Wi-Fi uses channel 6 (2.4 GHz).
-- Client-to-client traffic is not relayed.
-- DNS is answered by `dnsmasq` using the host's own resolvers, which are not
-  necessarily reached via `--wan`.
-
-## Development
+Or make a Wi-Fi hotspot on `wlan0`:
 
 ```sh
-make check    # lint (ruff) + typecheck (mypy) + tests (pytest)
-make build    # sdist + wheel in dist/
-make help
+sudo natshare --wan eth1 --lan wlan0 --ssid MyNetwork --password 'something secret'
+```
+
+Not sure of your interface names? Run `ip link` to list them.
+
+Press `Ctrl-C` when you're done.
+
+## Options
+
+| Option | What it does |
+| --- | --- |
+| `--wan`, `-w` | The connection that has internet |
+| `--lan`, `-l` | Where to share it (a cable port or Wi-Fi card) |
+| `--ssid`, `-s` | Hotspot name (default `natshare-ap`) |
+| `--password`, `-p` | Hotspot password, 8 characters or more (open if left out) |
+| `--subnet` | Address range for your devices (default `10.42.0.0/24`) |
+| `--verbose`, `-v` | Show more detail while it runs |
+
+## Good to know
+
+- It's slower than your system's built-in sharing, since it's all done in Python.
+  Fine for browsing and streaming, not for maxing out a fast line.
+- IPv4 only.
+- If a Wi-Fi hotspot won't start, your network manager may be holding the card.
+  Tell it to leave that card alone first.
+- Details like the browser you use can still be visible to websites. natshare
+  hides your devices, not what they say about themselves.
+
+## For developers
+
+```sh
+make install-dev   # set up a local environment
+make check         # lint, type check and tests
+make build         # build a package
+make help          # list everything
 ```
 
 MIT licensed.
