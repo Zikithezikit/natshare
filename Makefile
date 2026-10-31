@@ -5,12 +5,15 @@ VPY     = $(VENV)/bin/python
 PIP_FLAGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help install uninstall install-dev test lint format typecheck check build clean
+.PHONY: help deps install uninstall install-dev test lint format typecheck check build clean
 
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
 
-install: ## Install natshare system-wide (use sudo; set PIP_FLAGS if needed)
+deps: ## Install system programs (dnsmasq, hostapd, iproute2, rfkill)
+	./scripts/install-deps.sh
+
+install: deps ## Install natshare and its system dependencies (set PIP_FLAGS if pip refuses)
 	$(PYTHON) -m pip install $(PIP_FLAGS) .
 
 uninstall: ## Uninstall natshare

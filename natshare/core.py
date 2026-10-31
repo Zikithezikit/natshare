@@ -67,7 +67,7 @@ class NatShare:
         need = ["ip", "dnsmasq"] + (["hostapd"] if is_wireless(self.cfg.lan) else [])
         missing = [b for b in need if not shutil.which(b)]
         if missing:
-            return "missing required binaries: " + ", ".join(missing)
+            return "missing required binaries: " + ", ".join(missing) + " (run `make deps`)"
         return None
 
     def run(self) -> int:

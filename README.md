@@ -12,8 +12,8 @@ devices don't show up.
 
 ## Quick start
 
-You need Linux, Python 3.9+, root access, and these installed: `dnsmasq`
-(plus `hostapd` if you want a Wi-Fi hotspot).
+You need Linux, Python 3.9+ and root access. Everything else, including `dnsmasq`
+and `hostapd`, is installed for you.
 
 ```sh
 git clone https://github.com/Zikithezikit/natshare.git
@@ -36,6 +36,9 @@ sudo natshare --wan eth1 --lan wlan0 --ssid MyNetwork --password 'something secr
 Not sure of your interface names? Run `ip link` to list them.
 
 Press `Ctrl-C` when you're done.
+
+If pip refuses to install system-wide ("externally managed environment"), use
+`make install PIP_FLAGS=--break-system-packages`.
 
 ## Options
 
@@ -66,5 +69,7 @@ make check         # lint, type check and tests
 make build         # build a package
 make help          # list everything
 ```
+
+Questions or bugs: haimovyoav.work@gmail.com
 
 MIT licensed.
