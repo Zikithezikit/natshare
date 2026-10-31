@@ -5,6 +5,7 @@ from typing import Optional
 
 from . import __version__
 from .core import Config, NatShare
+from .netconst import DEFAULT_SUBNET
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -24,7 +25,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--password", "-p", help="WPA2 passphrase for Wi-Fi access point (open network if omitted)"
     )
     p.add_argument(
-        "--subnet", default="10.42.0.0/24", help="Subnet for local clients (default: 10.42.0.0/24)"
+        "--subnet", default=DEFAULT_SUBNET, help=f"Subnet for local clients (default: {DEFAULT_SUBNET})"
     )
     p.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging output")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

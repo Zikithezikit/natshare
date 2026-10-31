@@ -11,6 +11,8 @@ log = logging.getLogger(__name__)
 TUNSETIFF = 0x400454CA
 IFF_TUN = 0x0001
 IFF_NO_PI = 0x1000
+MAX_PACKET = 65535
+DEFAULT_NAME, DEFAULT_IP, DEFAULT_NETMASK = "natshare0", "10.42.0.1", "255.255.255.0"
 
 
 def _prefixlen(netmask: str) -> int:
@@ -18,7 +20,7 @@ def _prefixlen(netmask: str) -> int:
 
 
 class TunInterface:
-    def __init__(self, name: str = "natshare0", ip: str = "10.42.0.1", netmask: str = "255.255.255.0"):
+    def __init__(self, name: str = DEFAULT_NAME, ip: str = DEFAULT_IP, netmask: str = DEFAULT_NETMASK):
         self.name, self.ip, self.netmask = name, ip, netmask
         self.fd = -1
 
@@ -36,7 +38,7 @@ class TunInterface:
         return self.fd
 
     def read_packet(self) -> bytes:
-        return os.read(self.fd, 65535)
+        return os.read(self.fd, MAX_PACKET)
 
     def write_packet(self, packet: bytes) -> None:
         os.write(self.fd, packet)

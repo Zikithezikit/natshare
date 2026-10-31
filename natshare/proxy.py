@@ -8,26 +8,55 @@ import select
 import socket
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Optional
 
 from . import packet as pk
 
 log = logging.getLogger(__name__)
 
-M32 = 0xFFFFFFFF
-MSS = 1400
-MAX_WINDOW = 65535
-UDP_IDLE = 60
+M32 = pk.SEQ_MASK
+SEQ_HALF = pk.SEQ_HALF
+MSS = 1400  # advertised to clients; fits a 1500-byte Ethernet MTU with headers to spare
+MAX_WINDOW = pk.TCP_MAX_WINDOW
+MAX_UDP_REPLY = 1500 - pk.IPV4_HEADER_LEN - pk.UDP_HEADER_LEN  # larger replies would need fragmenting
+RECV_SEGMENTS = 16  # max MSS-sized segments read from a remote socket per wakeup
+PACKETS_PER_WAKEUP = 128  # max client packets drained per select() wakeup
+STEP_TIMEOUT = 0.5  # default select() timeout, seconds
+UDP_IDLE = 60  # idle expiry per flow type, seconds
 TCP_IDLE = 300
 ICMP_IDLE = 30
-RTO = 1.0
+RTO = 1.0  # fixed retransmission timeout, seconds
+BROADCAST = "255.255.255.255"
 
 CONNECTING, SYNACKED, ESTABLISHED = range(3)
 
 
 def _geq(a: int, b: int) -> bool:
     """a >= b in 32-bit sequence space."""
-    return (a - b) & M32 < 0x80000000
+    return (a - b) & M32 < SEQ_HALF
+
+
+@dataclass
+class Unacked:
+    """A segment sent to the client and awaiting acknowledgement."""
+
+    seq: int
+    data: bytes
+    fin: bool
+    sent_at: float
+
+
+@dataclass
+class UdpFlow:
+    sock: socket.socket
+    last: float
+
+
+@dataclass
+class IcmpEntry:
+    client: str
+    last: float
 
 
 class TcpFlow:
@@ -39,7 +68,7 @@ class TcpFlow:
         self.snd_una = self.snd_isn
         self.snd_nxt = (self.snd_isn + 1) & M32
         self.peer_win = peer_win
-        self.unacked = deque()  # [seq, data, fin, sent_at]
+        self.unacked: deque[Unacked] = deque()
         self.out_buf = bytearray()  # client -> remote, not yet written to the socket
         self.client_fin = False
         self.shut_wr = False
@@ -60,9 +89,9 @@ class TcpFlow:
 class Proxy:
     def __init__(self, io, subnet: ipaddress.IPv4Network, wan: Optional[str] = None):
         self.io, self.subnet, self.wan = io, subnet, wan
-        self.tcp: dict = {}
-        self.udp: dict = {}  # (cip, cport, dip, dport) -> [sock, last]
-        self.icmp: dict = {}  # (dip, ident) -> [cip, last]
+        self.tcp: dict[tuple[str, int, str, int], TcpFlow] = {}
+        self.udp: dict[tuple[str, int, str, int], UdpFlow] = {}  # (cip, cport, dip, dport)
+        self.icmp: dict[tuple[str, int], IcmpEntry] = {}  # (dip, ident)
         self.icmp_sock: Optional[socket.socket] = None
         try:
             self.icmp_sock = self._sock(socket.SOCK_RAW, socket.IPPROTO_ICMP)
@@ -90,7 +119,7 @@ class Proxy:
             or addr.is_multicast
             or addr.is_loopback
             or addr.is_unspecified
-            or dst == "255.255.255.255"
+            or dst == BROADCAST
         )
 
     # ---- packet ingress ------------------------------------------------
@@ -120,22 +149,22 @@ class Proxy:
             except OSError as e:
                 log.debug("udp %s: %s", key, e)
                 return
-            flow = self.udp[key] = [s, 0.0]
+            flow = self.udp[key] = UdpFlow(s, 0.0)
             log.debug("udp new %s:%d -> %s:%d", *key)
-        flow[1] = time.monotonic()
+        flow.last = time.monotonic()
         try:
-            flow[0].send(dg.payload)
+            flow.sock.send(dg.payload)
         except OSError as e:
             log.debug("udp send %s: %s", key, e)
 
     def _udp_out(self, key, flow) -> None:
         try:
-            data = flow[0].recv(65535)
+            data = flow.sock.recv(pk.IPV4_MAX_PACKET)
         except OSError:
             return
-        flow[1] = time.monotonic()
+        flow.last = time.monotonic()
         cip, cport, dip, dport = key
-        if len(data) > 1472:
+        if len(data) > MAX_UDP_REPLY:
             log.debug("udp reply too large for MTU (%d bytes), dropped", len(data))
             return
         self._emit(pk.build_udp(dip, dport, cip, cport, data))
@@ -143,10 +172,10 @@ class Proxy:
     # ---- ICMP ----------------------------------------------------------
     def _icmp_in(self, ip) -> None:
         msg = ip.payload
-        if self.icmp_sock is None or len(msg) < 8 or msg[0] != 8:
+        if self.icmp_sock is None or len(msg) < pk.ICMP_HEADER_LEN or msg[0] != pk.ICMP_ECHO_REQUEST:
             return
-        ident = int.from_bytes(msg[4:6], "big")
-        self.icmp[(ip.dst, ident)] = [ip.src, time.monotonic()]
+        ident = int.from_bytes(msg[pk.ICMP_ID_OFFSET : pk.ICMP_ID_END], "big")
+        self.icmp[(ip.dst, ident)] = IcmpEntry(ip.src, time.monotonic())
         try:
             self.icmp_sock.sendto(msg, (ip.dst, 0))
         except OSError as e:
@@ -155,16 +184,21 @@ class Proxy:
     def _icmp_out(self) -> None:
         assert self.icmp_sock is not None
         try:
-            raw, _ = self.icmp_sock.recvfrom(65535)
+            raw, _ = self.icmp_sock.recvfrom(pk.IPV4_MAX_PACKET)
         except OSError:
             return
         ip = pk.parse_ipv4(raw)
-        if not ip or ip.proto != pk.ICMP or len(ip.payload) < 8 or ip.payload[0] != 0:
+        if (
+            not ip
+            or ip.proto != pk.ICMP
+            or len(ip.payload) < pk.ICMP_HEADER_LEN
+            or ip.payload[0] != pk.ICMP_ECHO_REPLY
+        ):
             return
-        ident = int.from_bytes(ip.payload[4:6], "big")
+        ident = int.from_bytes(ip.payload[pk.ICMP_ID_OFFSET : pk.ICMP_ID_END], "big")
         entry = self.icmp.get((ip.src, ident))
         if entry:
-            self._emit(pk.build_ipv4(ip.src, entry[0], pk.ICMP, ip.payload))
+            self._emit(pk.build_ipv4(ip.src, entry.client, pk.ICMP, ip.payload))
 
     # ---- TCP -----------------------------------------------------------
     def _send(self, f, seq, flags, payload=b"", mss=None, ack=None) -> None:
@@ -220,8 +254,8 @@ class Proxy:
             if 0 < (seg.ack - f.snd_una) & M32 <= outstanding:
                 f.snd_una = seg.ack
                 while f.unacked:
-                    seq, data, fin, _ = f.unacked[0]
-                    if not _geq(seg.ack, seq + len(data) + fin):
+                    head = f.unacked[0]
+                    if not _geq(seg.ack, head.seq + len(head.data) + head.fin):
                         break
                     f.unacked.popleft()
         if f.state == CONNECTING:
@@ -230,7 +264,7 @@ class Proxy:
         fin = bool(seg.flags & pk.FIN)
         if payload or fin:
             skip = (f.rcv_nxt - seq) & M32
-            if 0 < skip < 0x80000000:  # retransmission with new bytes at the tail
+            if 0 < skip < SEQ_HALF:  # retransmission with new bytes at the tail
                 payload, seq = payload[skip:], f.rcv_nxt
             if seq == f.rcv_nxt:
                 f.out_buf += payload
@@ -261,7 +295,7 @@ class Proxy:
 
     def _remote_readable(self, f) -> None:
         try:
-            data = f.sock.recv(min(max(f.room, 1), 16 * MSS))
+            data = f.sock.recv(min(max(f.room, 1), RECV_SEGMENTS * MSS))
         except (BlockingIOError, InterruptedError):
             return
         except OSError:
@@ -271,14 +305,14 @@ class Proxy:
         if not data:
             f.remote_eof = True
             f.fin_sent = True
-            f.unacked.append([f.snd_nxt, b"", True, now])
+            f.unacked.append(Unacked(f.snd_nxt, b"", True, now))
             self._send(f, f.snd_nxt, pk.FIN | pk.ACK)
             f.snd_nxt = (f.snd_nxt + 1) & M32
             self._maybe_done(f)
             return
         for i in range(0, len(data), MSS):
             chunk = data[i : i + MSS]
-            f.unacked.append([f.snd_nxt, chunk, False, now])
+            f.unacked.append(Unacked(f.snd_nxt, chunk, False, now))
             self._send(f, f.snd_nxt, pk.ACK | pk.PSH, chunk)
             f.snd_nxt = (f.snd_nxt + len(chunk)) & M32
 
@@ -305,14 +339,15 @@ class Proxy:
         f.sock.close()
 
     # ---- event loop ----------------------------------------------------
-    def step(self, timeout: float = 0.5) -> None:
-        rlist, wlist = [self.io], []
-        owners = {}
+    def step(self, timeout: float = STEP_TIMEOUT) -> None:
+        rlist: list = [self.io]
+        wlist: list = []
+        owners: dict = {}
         if self.icmp_sock:
             rlist.append(self.icmp_sock)
         for key, flow in self.udp.items():
-            rlist.append(flow[0])
-            owners[flow[0]] = ("udp", key, flow)
+            rlist.append(flow.sock)
+            owners[flow.sock] = ("udp", key, flow)
         for f in self.tcp.values():
             owners[f.sock] = ("tcp", f.key, f)
             if f.state == CONNECTING:
@@ -332,7 +367,7 @@ class Proxy:
                 self._maybe_done(f)
         for s in r:
             if s is self.io:
-                for _ in range(128):
+                for _ in range(PACKETS_PER_WAKEUP):
                     try:
                         raw = self.io.read_packet()
                     except (BlockingIOError, InterruptedError):
@@ -356,23 +391,23 @@ class Proxy:
                 self._abort(f)
             elif f.state == SYNACKED and now - f.synack_at > RTO:
                 self._send_synack(f)
-            elif f.unacked and now - f.unacked[0][3] > RTO:
+            elif f.unacked and now - f.unacked[0].sent_at > RTO:
                 e = f.unacked[0]
-                e[3] = now
-                self._send(f, e[0], pk.ACK | (pk.FIN if e[2] else pk.PSH), e[1])
-        for key, flow in list(self.udp.items()):
-            if now - flow[1] > UDP_IDLE:
-                flow[0].close()
-                del self.udp[key]
-        for key, entry in list(self.icmp.items()):
-            if now - entry[1] > ICMP_IDLE:
-                del self.icmp[key]
+                e.sent_at = now
+                self._send(f, e.seq, pk.ACK | (pk.FIN if e.fin else pk.PSH), e.data)
+        for ukey, uflow in list(self.udp.items()):
+            if now - uflow.last > UDP_IDLE:
+                uflow.sock.close()
+                del self.udp[ukey]
+        for ikey, entry in list(self.icmp.items()):
+            if now - entry.last > ICMP_IDLE:
+                del self.icmp[ikey]
 
     def close(self) -> None:
         for f in list(self.tcp.values()):
             f.sock.close()
         for flow in self.udp.values():
-            flow[0].close()
+            flow.sock.close()
         self.tcp.clear()
         self.udp.clear()
         if self.icmp_sock:

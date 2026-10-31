@@ -12,10 +12,13 @@ from typing import Optional
 
 from .dhcp import Dnsmasq
 from .l2 import L2Port
+from .netconst import DEFAULT_SUBNET, GATEWAY_OFFSET, MAX_PREFIXLEN
 from .proxy import Proxy
-from .wifi import Hostapd, is_wireless
+from .wifi import DEFAULT_SSID, Hostapd, is_wireless
 
 log = logging.getLogger(__name__)
+
+LOOP_INTERVAL = 0.5  # seconds between supervision checks of child processes
 
 
 @dataclass
@@ -24,7 +27,7 @@ class Config:
     lan: str
     ssid: Optional[str] = None
     password: Optional[str] = None
-    subnet: str = "10.42.0.0/24"
+    subnet: str = DEFAULT_SUBNET
     verbose: bool = False
 
 
@@ -42,7 +45,7 @@ class NatShare:
         self.cfg = cfg
         self.stop = False
         self.net = ipaddress.IPv4Network(cfg.subnet, strict=False)  # raises ValueError if invalid
-        self.gateway = self.net.network_address + 1
+        self.gateway = self.net.network_address + GATEWAY_OFFSET
         self.hostapd: Optional[Hostapd] = None
         self.dnsmasq: Optional[Dnsmasq] = None
         self.port: Optional[L2Port] = None
@@ -54,8 +57,8 @@ class NatShare:
         """Returns an error message if the environment is unusable, else None."""
         if os.geteuid() != 0:
             return "natshare must be run as root (needs CAP_NET_ADMIN / CAP_NET_RAW)"
-        if self.net.prefixlen > 27:
-            return f"subnet {self.cfg.subnet} must be an IPv4 network of /27 or larger"
+        if self.net.prefixlen > MAX_PREFIXLEN:
+            return f"subnet {self.cfg.subnet} must be an IPv4 network of /{MAX_PREFIXLEN} or larger"
         for ifname in (self.cfg.wan, self.cfg.lan):
             if not os.path.isdir(f"/sys/class/net/{ifname}"):
                 return f"interface {ifname!r} does not exist"
@@ -85,10 +88,10 @@ class NatShare:
             )
             while not self.stop:
                 assert self.proxy is not None
-                self.proxy.step(0.5)
+                self.proxy.step(LOOP_INTERVAL)
                 if self.dnsmasq and not self.dnsmasq.alive():
                     raise RuntimeError(
-                        "dnsmasq exited unexpectedly (is another DNS server bound to port 53 on the LAN?)"
+                        "dnsmasq exited unexpectedly (is another DNS server bound to the DNS port on the LAN?)"
                     )
                 if self.hostapd and not self.hostapd.alive():
                     raise RuntimeError("hostapd exited unexpectedly")
@@ -102,7 +105,7 @@ class NatShare:
     def _setup(self) -> None:
         cfg = self.cfg
         if is_wireless(cfg.lan):
-            self.hostapd = Hostapd(cfg.lan, cfg.ssid or "natshare-ap", cfg.password)
+            self.hostapd = Hostapd(cfg.lan, cfg.ssid or DEFAULT_SSID, cfg.password)
             self.hostapd.start()
         elif cfg.ssid or cfg.password:
             log.warning("%s is not wireless; ignoring --ssid/--password", cfg.lan)

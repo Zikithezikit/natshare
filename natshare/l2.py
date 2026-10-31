@@ -8,8 +8,16 @@ gateway address is answered by the kernel, since the LAN interface holds it.
 import socket
 import struct
 
+from . import packet as pk
+
 ETH_P_IP = 0x0800
-PACKET_OUTGOING = 4
+ETH_HEADER_LEN = 14
+MAC_LEN = 6
+ETH_SRC = slice(MAC_LEN, 2 * MAC_LEN)
+PACKET_OUTGOING = 4  # sockaddr_ll pkttype
+PKTTYPE_INDEX = 2  # position of pkttype in the recvfrom() address tuple
+IPV4_SRC = slice(12, 12 + pk.IPV4_ADDR_LEN)
+IPV4_DST = slice(16, 16 + pk.IPV4_ADDR_LEN)
 
 
 class L2Port:
@@ -27,15 +35,16 @@ class L2Port:
 
     def read_packet(self):
         """Returns one IPv4 packet, or None for frames to ignore. Raises BlockingIOError when drained."""
-        frame, addr = self.sock.recvfrom(65535)
-        if addr[2] == PACKET_OUTGOING or len(frame) < 34 or frame[6:12] == self.mac:
+        frame, addr = self.sock.recvfrom(pk.IPV4_MAX_PACKET)
+        too_short = len(frame) < ETH_HEADER_LEN + pk.IPV4_HEADER_LEN
+        if addr[PKTTYPE_INDEX] == PACKET_OUTGOING or too_short or frame[ETH_SRC] == self.mac:
             return None
-        pkt = frame[14:]
-        self.macs[socket.inet_ntoa(pkt[12:16])] = frame[6:12]
+        pkt = frame[ETH_HEADER_LEN:]
+        self.macs[socket.inet_ntoa(pkt[IPV4_SRC])] = frame[ETH_SRC]
         return pkt
 
     def write_packet(self, packet: bytes) -> None:
-        mac = self.macs.get(socket.inet_ntoa(packet[16:20]))
+        mac = self.macs.get(socket.inet_ntoa(packet[IPV4_DST]))
         if mac:
             self.sock.send(mac + self.mac + struct.pack("!H", ETH_P_IP) + packet)
 
