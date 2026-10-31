@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "natshare"
+dynamic = ["version"]
+description = "Transient userspace Internet Connection Sharing tool"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Yoav Haimov" }]
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+    "Topic :: System :: Networking",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "mypy", "pytest", "build"]
+
+[project.scripts]
+natshare = "natshare.cli:main"
+
+[tool.setuptools]
+packages = ["natshare"]
+
+[tool.setuptools.dynamic]
+version = { attr = "natshare.__version__" }
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
