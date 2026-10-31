@@ -90,9 +90,7 @@ class NatShare:
                 assert self.proxy is not None
                 self.proxy.step(LOOP_INTERVAL)
                 if self.dnsmasq and not self.dnsmasq.alive():
-                    raise RuntimeError(
-                        "dnsmasq exited unexpectedly (is another DNS server bound to the DNS port on the LAN?)"
-                    )
+                    raise RuntimeError("dnsmasq exited unexpectedly (is another DNS server using port 53?)")
                 if self.hostapd and not self.hostapd.alive():
                     raise RuntimeError("hostapd exited unexpectedly")
             return 0
