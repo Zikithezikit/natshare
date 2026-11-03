@@ -35,6 +35,9 @@ class Dnsmasq:
         lines = [
             f"interface={self.lan}",
             "bind-interfaces",
+            # dnsmasq also binds loopback by default, colliding with local resolvers
+            # (e.g. a stub on 10.255.255.254); LAN clients only need the LAN interface.
+            "except-interface=lo",
             f"dhcp-range={self.range[0]},{self.range[1]},{self.subnet.netmask},{DHCP_LEASE_TIME}",
             f"dhcp-option=option:router,{self.gateway}",
             f"dhcp-option=option:dns-server,{self.gateway}",

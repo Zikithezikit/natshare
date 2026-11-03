@@ -21,6 +21,7 @@ class ConfigTest(unittest.TestCase):
                 lines = f.read().split()
             self.assertIn("domain-needed", lines)
             self.assertIn("bogus-priv", lines)
+            self.assertIn("except-interface=lo", lines)
             self.assertFalse(any(line.startswith("add-mac") for line in lines))
         finally:
             d.stop()
